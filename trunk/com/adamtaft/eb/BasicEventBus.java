@@ -71,10 +71,12 @@ public final class BasicEventBus implements EventBus {
 	 * from shutting down).
 	 */
 	public BasicEventBus() {
-		this(Executors.newSingleThreadExecutor(new ThreadFactory() {
+		this(Executors.newCachedThreadPool(new ThreadFactory() {
+			private final ThreadFactory delegate = Executors.defaultThreadFactory();
+
 			@Override
 			public Thread newThread(Runnable r) {
-				Thread t = new Thread(r);
+				Thread t = delegate.newThread(r);
 				t.setDaemon(true);
 				return t;
 			}
