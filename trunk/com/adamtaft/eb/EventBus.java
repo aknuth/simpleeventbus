@@ -24,7 +24,7 @@ package com.adamtaft.eb;
  * annotation.  This annotation marks the methods of the subscriber class which
  * should be used to receive event bus events.
  * <p>
- * A published event has the potential to be vetoed and thus not propogated to
+ * A published event has the potential to be vetoed and thus not propagated to
  * other non-vetoing subscribers.  This is accomplished by setting the
  * {@link EventHandler#canVeto()} property to true and throwing a {@link VetoException}
  * when the method is called from the EventBus.  The event bus will note the
@@ -63,18 +63,34 @@ public interface EventBus {
 	
 	
 	/**
-	 * Sends a message on the bus which will be propogated to the appropriate
+	 * Sends a message on the bus which will be propagated to the appropriate
 	 * subscribers of the event type.  Only subscribers which have elected to
 	 * subscribe to the same event type as the supplied event will be notified
 	 * of the event.
 	 * <p>
-	 * Events can be vetoed, indicating that the event should not propogate to
+	 * Events can be vetoed, indicating that the event should not propagate to
 	 * the subscribers that don't have a veto.  The subscriber can veto by
 	 * setting the {@link EventHandler#canVeto()} return to true and by throwing
 	 * a {@link VetoException}.
+	 * <p>
+	 * There is no specification given as to how the messages will be delivered,
+	 * in terms of synchronous or asynchronous.  The only requirement is that
+	 * all the event handlers that can issue vetos be called before non-vetoing
+	 * handlers.  Most implementations will likely deliver messages asynchronously.
 	 * 
 	 * @param event The event to send out to the subscribers of the same type.
 	 */
 	void publish(Object event);
+	
+	
+	/**
+	 * Indicates whether the bus has pending events to publish.  Since message/event
+	 * delivery can be asynchronous (on other threads), the method can be used to
+	 * start or stop certain actions based on all the events having been published.
+	 * I.e. perhaps before an application closes, etc. 
+	 * 
+	 * @return True if events are still being delivered.
+	 */
+	boolean hasPendingEvents();
 
 }

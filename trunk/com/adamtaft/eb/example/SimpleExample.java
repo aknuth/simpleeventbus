@@ -2,8 +2,7 @@ package com.adamtaft.eb.example;
 
 import java.awt.event.ActionEvent;
 
-import com.adamtaft.eb.EventBus;
-import com.adamtaft.eb.EventBusFactory;
+import com.adamtaft.eb.EventBusService;
 import com.adamtaft.eb.EventHandler;
 
 public class SimpleExample {
@@ -24,20 +23,22 @@ public class SimpleExample {
 		SimpleExample se = new SimpleExample();
 		
 		// subscribe it to the EventBus
-		EventBus eb = EventBusFactory.getEventBus();
-		eb.subscribe(se);
+		EventBusService.subscribe(se);
 		
 		// publish some events to the bus.
-		eb.publish("Some String Event");
-		eb.publish(new ActionEvent("Fake Action Event Source", -1, "Fake Command"));
+		EventBusService.publish("Some String Event");
+		EventBusService.publish(new ActionEvent("Fake Action Event Source", -1, "Fake Command"));
+		
+		// this shouldn't be seen, since no handler is interested in Object
+		EventBusService.publish(new Object());
 		
 		// don't forget to unsubscribe if you're done.
 		// not required in this case, since the program ends here anyway.
-		eb.unsubscribe(se);
+		EventBusService.unsubscribe(se);
 		
 		// Future messages shouldn't be seen by the SimpleExample handler after
 		// being unsubscribed.
-		eb.publish("This event should not be seen after the unsubscribe call.");
+		EventBusService.publish("This event should not be seen after the unsubscribe call.");
 	}
 	
 }

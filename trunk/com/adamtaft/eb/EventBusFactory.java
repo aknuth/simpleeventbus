@@ -7,7 +7,9 @@ package com.adamtaft.eb;
  * used easily with this factory.
  *
  * @author Adam Taft
+ * @deprecated Favor using the {@link EventBusService} instead.
  */
+@Deprecated
 public class EventBusFactory {
 
 	/**
