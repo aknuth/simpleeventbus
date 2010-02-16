@@ -1,7 +1,6 @@
 package com.adamtaft.eb.example;
 
-import com.adamtaft.eb.EventBus;
-import com.adamtaft.eb.EventBusFactory;
+import com.adamtaft.eb.EventBusService;
 import com.adamtaft.eb.EventHandler;
 import com.adamtaft.eb.VetoEvent;
 import com.adamtaft.eb.VetoException;
@@ -29,11 +28,10 @@ public class VetoExample {
 		VetoExample ve = new VetoExample();
 		
 		// subscribe it to the bus
-		EventBus eb = EventBusFactory.getEventBus();
-		eb.subscribe(ve);
+		EventBusService.subscribe(ve);
 		
 		// publish an event that will get vetoed
-		eb.publish("String Event (should be vetoed)");
+		EventBusService.publish("String Event (should be vetoed)");
 	}
 	
 }

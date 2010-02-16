@@ -1,7 +1,6 @@
 package com.adamtaft.eb.example;
 
-import com.adamtaft.eb.EventBus;
-import com.adamtaft.eb.EventBusFactory;
+import com.adamtaft.eb.EventBusService;
 import com.adamtaft.eb.EventHandler;
 
 public class WeakReferenceExample {
@@ -16,11 +15,10 @@ public class WeakReferenceExample {
 		WeakReferenceExample wre = new WeakReferenceExample();
 		
 		// subscribe the handler to the event bus
-		EventBus bus = EventBusFactory.getEventBus();
-		bus.subscribe(wre);
+		EventBusService.subscribe(wre);
 		
 		// send an event to the buss
-		bus.publish("First String Event");
+		EventBusService.publish("First String Event");
 		
 		// note, we pause here for a second, to let the event get out
 		Thread.sleep(100);
@@ -35,7 +33,7 @@ public class WeakReferenceExample {
 		// Ideally, this second event won't show up.  YMMV
 		// You might see this second event if the garbage collector didn't run
 		// This is system and JVM specific.  This example does work for me.
-		bus.publish("Second String Event");
+		EventBusService.publish("Second String Event");
 	}
 	
 }
