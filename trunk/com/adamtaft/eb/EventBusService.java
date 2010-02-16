@@ -37,4 +37,8 @@ public final class EventBusService {
 		eventBus.publish(event);
 	}
 	
+	public static boolean hasPendingEvents() {
+		return eventBus.hasPendingEvents();
+	}
+	
 }
