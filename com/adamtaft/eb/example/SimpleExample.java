@@ -18,7 +18,7 @@ public class SimpleExample {
 	}
 	
 
-	public static void main(String[] args) {
+	public static void main(String[] args) throws Exception {
 		// create an event handler
 		SimpleExample se = new SimpleExample();
 		
@@ -32,6 +32,12 @@ public class SimpleExample {
 		// this shouldn't be seen, since no handler is interested in Object
 		EventBusService.publish(new Object());
 		
+		// wait here to ensure all events (above) have been pushed out before
+		// unsubscribing.  Unsubscribe may happen before the event is delivered.
+		while (EventBusService.hasPendingEvents()) {
+			Thread.sleep(50);
+		}
+		
 		// don't forget to unsubscribe if you're done.
 		// not required in this case, since the program ends here anyway.
 		EventBusService.unsubscribe(se);
@@ -39,6 +45,7 @@ public class SimpleExample {
 		// Future messages shouldn't be seen by the SimpleExample handler after
 		// being unsubscribed.
 		EventBusService.publish("This event should not be seen after the unsubscribe call.");
+		
 	}
 	
 }

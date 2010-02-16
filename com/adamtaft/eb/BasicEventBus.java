@@ -55,13 +55,22 @@ import java.util.concurrent.ThreadFactory;
  */
 public final class BasicEventBus implements EventBus {
 
-	private final List<SubscriberInfo> subscribers = new CopyOnWriteArrayList<SubscriberInfo>();
+	private final List<HandlerInfo> handlers = new CopyOnWriteArrayList<HandlerInfo>();
 	private final BlockingQueue<Object> queue = new LinkedBlockingQueue<Object>();
+	private final BlockingQueue<HandlerInfo> killQueue = new LinkedBlockingQueue<HandlerInfo>();
 	
 	/**
 	 * The ExecutorService used to handle event delivery to the event handlers.
 	 */
 	private final ExecutorService executorService;
+	
+	/**
+	 * Should the event bus wait for the regular handlers to finish processing
+	 * the event messages before continuing to the next event.  Defaults to
+	 * 'false' which is sensible for most use cases.
+	 */
+	private final boolean waitForHandlers;
+	
 	
 	/**
 	 * Default constructor sets up the executorService property to use the
@@ -73,23 +82,27 @@ public final class BasicEventBus implements EventBus {
 	public BasicEventBus() {
 		this(Executors.newCachedThreadPool(new ThreadFactory() {
 			private final ThreadFactory delegate = Executors.defaultThreadFactory();
-
 			@Override
 			public Thread newThread(Runnable r) {
 				Thread t = delegate.newThread(r);
 				t.setDaemon(true);
 				return t;
 			}
-		}));
+		}), false);
 	}
 	
-	public BasicEventBus(ExecutorService executorService) {
+	public BasicEventBus(ExecutorService executorService, boolean waitForHandlers) {
 		// start the background daemon consumer thread.
-		Thread t = new Thread(new EventQueueRunner());
-		t.setDaemon(true);
-		t.start();
+		Thread eventQueueThread = new Thread(new EventQueueRunner(), "EventQueue Consumer Thread");
+		eventQueueThread.setDaemon(true);
+		eventQueueThread.start();
+		
+		Thread killQueueThread = new Thread(new KillQueueRunner(), "KillQueue Consumer Thread");
+		killQueueThread.setDaemon(true);
+		killQueueThread.start();
 		
 		this.executorService = executorService;
+		this.waitForHandlers = waitForHandlers;
 	}
 
 	/**
@@ -120,8 +133,8 @@ public final class BasicEventBus implements EventBus {
 			}
 
 			// add the subscriber to the list
-			SubscriberInfo info = new SubscriberInfo(parameters[0], method, subscriber, eh.canVeto());
-			subscribers.add(info);
+			HandlerInfo info = new HandlerInfo(parameters[0], method, subscriber, eh.canVeto());
+			handlers.add(info);
 		}
 	}
 
@@ -133,15 +146,15 @@ public final class BasicEventBus implements EventBus {
 	 * @param subscriber The object to unsubcribe from future events.
 	 */
 	public void unsubscribe(Object subscriber) {
-		List<SubscriberInfo> killList = new ArrayList<SubscriberInfo>();
-		for (SubscriberInfo info : subscribers) {
+		List<HandlerInfo> killList = new ArrayList<HandlerInfo>();
+		for (HandlerInfo info : handlers) {
 			Object obj = info.getSubscriber();
 			if (obj == null || obj == subscriber) {
 				killList.add(info);
 			}
 		}
-		for (SubscriberInfo kill : killList) {
-			subscribers.remove(kill);
+		for (HandlerInfo kill : killList) {
+			handlers.remove(kill);
 		}
 	}
 
@@ -178,12 +191,10 @@ public final class BasicEventBus implements EventBus {
 	private void notifySubscribers(final Object evt) {
 		// roll through the subscribers
 		// we find the veto handlers, regular handlers
-		// we also store information about any that have been garbage collected
 		final List<Callable<Void>> vetoList = new ArrayList<Callable<Void>>();
 		final List<Callable<Void>> reguList = new ArrayList<Callable<Void>>();
-		final List<SubscriberInfo> killList = new ArrayList<SubscriberInfo>();
 
-		for (final SubscriberInfo info : subscribers) {
+		for (final HandlerInfo info : handlers) {
 			if (! info.matchesEvent(evt)) continue;
 			
 			Callable<Void> c = new Callable<Void>() {
@@ -191,7 +202,7 @@ public final class BasicEventBus implements EventBus {
 				public Void call() throws Exception {
 					Object obj = info.getSubscriber();
 					if (obj == null) {
-						killList.add(info);
+						killQueue.put(info);
 						return null;
 					}
 					info.getMethod().invoke(obj, evt);
@@ -243,10 +254,6 @@ public final class BasicEventBus implements EventBus {
 			}
 		}
 		
-		// cleanout any kill list items from the veto calls
-		for (SubscriberInfo kill : killList) {
-			subscribers.remove(kill);
-		}
 		
 		// ignore vetoCalled if the actual event was a VetoEvent
 		// i.e. one cannot veto a VetoEvent
@@ -260,6 +267,7 @@ public final class BasicEventBus implements EventBus {
 			return;
 		}
 		
+		
 		// submit the regular handler calls
 		List<Future<Void>> reguFutures;
 		try {
@@ -268,7 +276,11 @@ public final class BasicEventBus implements EventBus {
 			return;
 		}
 		
-		// wait for these to return
+		// wait for these to return, only if waitForHandlers is set
+		if (! waitForHandlers) {
+			return;
+		}
+		
 		for (Future<Void> f : reguFutures) {
 			try {
 				f.get();
@@ -282,11 +294,6 @@ public final class BasicEventBus implements EventBus {
 					throw new RuntimeException(cause);
 				}
 			}
-		}		
-		
-		// kill the killList
-		for (SubscriberInfo kill : killList) {
-			subscribers.remove(kill);
 		}
 		
 	}
@@ -308,16 +315,34 @@ public final class BasicEventBus implements EventBus {
 			}
 		}
 	}
+	
+	
+	private class KillQueueRunner implements Runnable {
+		@Override
+		public void run() {
+			try {
+				while (true) {
+					HandlerInfo info = killQueue.take();
+					if (info.getSubscriber() == null) {
+						handlers.remove(info);
+					}
+				}
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+				throw new RuntimeException(e);
+			}
+		}
+	}
 
 	
 	// used to hold the subscriber
-	private static class SubscriberInfo {
+	private static class HandlerInfo {
 		private final Class<?> eventClass;
 		private final Method method;
 		private final WeakReference<?> subscriber;
 		private final boolean vetoHandler;
 
-		public SubscriberInfo(Class<?> eventClass, Method method, Object subscriber, boolean vetoHandler) {
+		public HandlerInfo(Class<?> eventClass, Method method, Object subscriber, boolean vetoHandler) {
 			this.eventClass = eventClass;
 			this.method = method;
 			this.subscriber = new WeakReference<Object>(subscriber);
@@ -341,4 +366,5 @@ public final class BasicEventBus implements EventBus {
 		}
 		
 	}
+
 }
