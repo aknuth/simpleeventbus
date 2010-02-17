@@ -1,14 +1,12 @@
 package com.adamtaft.eb;
 
 import java.lang.ref.WeakReference;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -117,6 +115,26 @@ public final class BasicEventBus implements EventBus {
 	 * @param subscriber The subscriber object which will receive notifications on {@link EventHandler} annotated methods.
 	 */
 	public void subscribe(Object subscriber) {
+		// lookup to see if we have any subscriber instances already
+		boolean subscribedAlready = false;
+		for (HandlerInfo info : handlers) {
+			Object otherSubscriber = info.getSubscriber();
+			if (otherSubscriber == null) {
+				try {
+					killQueue.put(info);
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+				continue;
+			}
+			if (subscriber == otherSubscriber) {
+				subscribedAlready = true;
+			}
+		}
+		if (subscribedAlready) {
+			return;
+		}
+		
 		Method[] methods = subscriber.getClass().getDeclaredMethods();
 		for (Method method : methods) {
 			// look for the EventHandler annotation on the method, if it exists
@@ -191,31 +209,19 @@ public final class BasicEventBus implements EventBus {
 	private void notifySubscribers(final Object evt) {
 		// roll through the subscribers
 		// we find the veto handlers, regular handlers
-		final List<Callable<Void>> vetoList = new ArrayList<Callable<Void>>();
-		final List<Callable<Void>> reguList = new ArrayList<Callable<Void>>();
+		final List<HandlerInfoCallable> vetoList = new ArrayList<HandlerInfoCallable>();
+		final List<HandlerInfoCallable> reguList = new ArrayList<HandlerInfoCallable>();
 
 		for (final HandlerInfo info : handlers) {
 			if (! info.matchesEvent(evt)) continue;
 			
-			Callable<Void> c = new Callable<Void>() {
-				@Override
-				public Void call() throws Exception {
-					Object obj = info.getSubscriber();
-					if (obj == null) {
-						killQueue.put(info);
-						return null;
-					}
-					info.getMethod().invoke(obj, evt);
-					return null;
-				}
-			};
+			HandlerInfoCallable hc = new HandlerInfoCallable(info, evt);
 			
 			if (info.isVetoHandler()) {
-				vetoList.add(c);
+				vetoList.add(hc);
 			} else {
-				reguList.add(c);
+				reguList.add(hc);
 			}
-			
 		}
 		
 		// used to keep track if a veto was called.
@@ -223,83 +229,61 @@ public final class BasicEventBus implements EventBus {
 		boolean vetoCalled = false;
 		
 		// submit the veto calls to the executor service
-		List<Future<Void>> vetoFutures;
 		try {
-			vetoFutures = executorService.invokeAll(vetoList);
-		} catch (InterruptedException e) {
-			// we just return if interrupted.
-			return;
-		}
-		// wait for these to return
-		for (Future<Void> f : vetoFutures) {
-			try {
-				f.get();
-			} catch (InterruptedException e) {
-				return;
-			} catch (ExecutionException e) {
-				// look for an InvocationTargetException from the method.invoke call
-				Throwable cause = e.getCause();
-				if (cause instanceof InvocationTargetException) {
-					// we're hunting for VetoException
-					cause = cause.getCause();
-					if (cause instanceof VetoException) {
-						vetoCalled = true;
-						continue;
-					}
-				} else if (cause instanceof RuntimeException) {
-					throw (RuntimeException) cause;
-				} else {
-					throw new RuntimeException(cause);					
+			for (Future<Boolean> f : executorService.invokeAll(vetoList)) {
+				if (f.get().booleanValue()) {
+					vetoCalled = true;
 				}
-			}
+			}			
+		} catch (Exception e) {
+			// this only happens if the executorService is interrupted,
+			// and by default, that shouldn't really ever happen.
+			// or, if the callable sneaks out an exception, which again
+			// shouldn't happen.
+			vetoCalled = true;
+			e.printStackTrace();
 		}
 		
-		
-		// ignore vetoCalled if the actual event was a VetoEvent
-		// i.e. one cannot veto a VetoEvent
-		if (vetoCalled && (evt instanceof VetoEvent)) {
+		// VetoEvents cannot be vetoed, sorry. :)
+		if (vetoCalled && evt instanceof VetoEvent) {
 			vetoCalled = false;
 		}
-
-		// if vetoed, publish a VetoEvent and return
+		
+		// simply return if a veto has occured
 		if (vetoCalled) {
-			publish(new VetoEvent(evt));
 			return;
 		}
 		
-		
-		// submit the regular handler calls
-		List<Future<Void>> reguFutures;
-		try {
-			reguFutures = executorService.invokeAll(reguList);
-		} catch (InterruptedException e) {
-			return;
-		}
-		
-		// wait for these to return, only if waitForHandlers is set
-		if (! waitForHandlers) {
-			return;
-		}
-		
-		for (Future<Void> f : reguFutures) {
+		// ExecutorService.invokeAll() blocks until all the results are computed.
+		// for the regular handlers, we need to check if the waitForHandlers
+		// property is true.  Otherwise (by default) we don't want invokeAll()
+		// to block.  We don't care about the results, because no vetoes are
+		// accounted for here and exceptions really shouldn't be thrown.
+		if (waitForHandlers) {
 			try {
-				f.get();
-			} catch (InterruptedException e) {
-				return;
-			} catch (ExecutionException e) {
-				Throwable cause = e.getCause();
-				if (cause instanceof RuntimeException) {
-					throw (RuntimeException) cause;
-				} else {
-					throw new RuntimeException(cause);
-				}
+				executorService.invokeAll(reguList);
+			} catch (Exception e) {
+				e.printStackTrace();
 			}
+			
+		} else {
+			executorService.submit(new Runnable() {
+				@Override
+				public void run() {
+					try {
+						executorService.invokeAll(reguList);
+					} catch (Exception e) {
+						e.printStackTrace();
+					}					
+				}
+			});
 		}
 		
-	}
+		
+	}	
 		
 
-	// the background thread runnable, simply extracts
+	// the background thread consumer, simply extracts
 	// any events from the queue and publishes them.
 	private class EventQueueRunner implements Runnable {
 		@Override
@@ -317,6 +301,8 @@ public final class BasicEventBus implements EventBus {
 	}
 	
 	
+	// consumer runnable to remove handler infos from the subscription list
+	// if they are null.  this is if the GC has collected them.
 	private class KillQueueRunner implements Runnable {
 		@Override
 		public void run() {
@@ -335,7 +321,7 @@ public final class BasicEventBus implements EventBus {
 	}
 
 	
-	// used to hold the subscriber
+	// used to hold the subscriber details
 	private static class HandlerInfo {
 		private final Class<?> eventClass;
 		private final Method method;
@@ -364,7 +350,68 @@ public final class BasicEventBus implements EventBus {
 		public boolean isVetoHandler() {
 			return vetoHandler;
 		}
-		
+				
 	}
+	
+	// callable used to actually invoke the task
+	// it eats any exception thrown and publishes an event back onto the bus
+	private class HandlerInfoCallable implements Callable<Boolean> {
+		private final HandlerInfo handlerInfo;
+		private final Object event;
+		
+		public HandlerInfoCallable(HandlerInfo handlerInfo, Object event) {
+			this.handlerInfo = handlerInfo;
+			this.event = event;
+		}
+		
+		/**
+		 * Invokes the HandlerInfo's callback handler method.  If any exeptions
+		 * are thrown, besides a VetoException, a {@link BusExceptionEvent} will
+		 * be published to the bus with the root cause of the problem.  If a
+		 * {@link VetoException} is thrown from the invoked method, a {@link VetoEvent}
+		 * will be published to the bus and the call will return true.
+		 * <p>
+		 * The call has been modified to not throw any Exceptions.  It will not,
+		 * unlike the interface defintion, throw an exception.  All exceptions are
+		 * handled locally.
+		 * 
+		 * @return True if the invoke was vetoed, false otherwise.
+		 */
+		@Override
+		public Boolean call() {
+			try {
+				Object subscriber = handlerInfo.getSubscriber();
+				if (subscriber == null) {
+					killQueue.put(handlerInfo);
+					return false;
+				}
+				
+				handlerInfo.getMethod().invoke(subscriber, event);
+				return false;
+				
+			} catch (Exception e) {
+				Throwable cause = e;
+				
+				// find the root cause
+				while (cause.getCause() != null) {
+					cause = cause.getCause();
+				}
+				
+				if (cause instanceof VetoException) {
+					publish(new VetoEvent(event));
+					return true;
+				}
+				
+				publish(new BusExceptionEvent(handlerInfo, cause));
+				
+				// TODO It will be nice to do something more useful than just printStackTrace.
+				// probably do some logging or something.  Or, maybe just the BusExceptionEvent
+				// is good enough.
+				cause.printStackTrace();
+				return false;
+			}
+		}
+	}
+	
 
 }
